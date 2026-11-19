@@ -79,7 +79,7 @@ return [
     |--------------------------------------------------------------------------
     |
     | These configuration options specify the behavior of Laravel's password
-    | reset functionality, including the table utilized for token storage
+    | reset functionality, including the cache store utilized for token storage
     | and the user provider that is invoked to actually retrieve users.
     |
     | The expiry time is the number of minutes that each reset token will be
@@ -95,7 +95,8 @@ return [
     'passwords' => [
         'users' => [
             'provider' => 'users',
-            'table' => env('AUTH_PASSWORD_RESET_TOKEN_TABLE', 'password_reset_tokens'),
+            'driver' => 'cache',
+            'store' => 'file',
             'expire' => 60,
             'throttle' => 60,
         ],

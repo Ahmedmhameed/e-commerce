@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -42,6 +43,19 @@ class Order extends Model
         'total' => 'decimal:2',
         'user_id' => 'integer',
     ];
+
+    /**
+     * Successful orders are paid, shipped, or delivered and have a completed payment.
+     *
+     * @param  Builder<Order>  $query
+     * @return Builder<Order>
+     */
+    public function scopeSuccessful(Builder $query): Builder
+    {
+        return $query
+            ->whereHas('status', fn (Builder $status) => $status->whereIn('status_name', ['paid', 'shipped', 'delivered']))
+            ->whereHas('payment', fn (Builder $payment) => $payment->where('status', 'completed'));
+    }
 
     public function billingAddress(): BelongsTo
     {

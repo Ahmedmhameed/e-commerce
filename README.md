@@ -7,6 +7,69 @@
 <a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
 </p>
 
+## Database setup
+
+### 1. Prerequisites
+
+Install PHP 8.4, Composer, and PostgreSQL 16. Use a local PostgreSQL login role that owns the application databases. Replace the example credentials with your local values.
+
+### 2. Create the databases
+
+Run this SQL as a PostgreSQL superuser. The application role does not need `CREATEDB`.
+
+```sql
+CREATE ROLE your_db_user LOGIN PASSWORD 'your_db_password';
+CREATE DATABASE ecommerce OWNER your_db_user;
+CREATE DATABASE ecommerce_test OWNER your_db_user;
+```
+
+### 3. Configure the environment
+
+Set these values in `.env`. Set `APP_ENV=local` for development seeding.
+
+```dotenv
+APP_ENV=local
+DB_CONNECTION=pgsql
+DB_HOST=127.0.0.1
+DB_PORT=5432
+DB_DATABASE=ecommerce
+DB_USERNAME=your_db_user
+DB_PASSWORD=your_db_password
+```
+
+### 4. Build the schema and seed reference data
+
+```bash
+php artisan migrate
+php artisan db:seed --class=ReferenceDataSeeder
+```
+
+### 5. Generate development data (optional, local only)
+
+```bash
+php artisan db:seed --class=DevelopmentDataSeeder
+```
+
+The seeder refuses to run if the `users` table already contains rows. To rebuild disposable development data, run:
+
+```bash
+php artisan migrate:fresh --seed
+```
+
+**Warning:** `migrate:fresh` deletes all tables in the database it targets. Never point it at a database with data you want to keep.
+
+### 6. Run tests against the test database
+
+```bash
+php artisan test
+```
+
+PHPUnit defaults to `ecommerce_test`. Laravel feature tests use `RefreshDatabase`, and the test bootstrap rejects connections that do not target the PostgreSQL database `ecommerce_test` before any test migrations run.
+
+### 7. Sample dataset reference
+
+The schema matches the 1K PostgreSQL e-commerce sample from databasesample.com. The sample data is not stored in this repository. `ReferenceDataSeeder` seeds reference tables with values from that sample. `DevelopmentDataSeeder` generates development records, including orders, products, and users.
+
 ## About Laravel
 
 Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:

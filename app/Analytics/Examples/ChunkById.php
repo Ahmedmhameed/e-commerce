@@ -2,22 +2,33 @@
 
 namespace App\Analytics\Examples;
 
-use App\Models\Product;
+use App\Models\Order;
+use Brick\Math\BigDecimal;
+use DateTimeImmutable;
 use Illuminate\Database\Eloquent\Collection;
 
 class ChunkById
 {
-    public function run(int $batchSize = 100): int
+    public function run(DateTimeImmutable $month, int $batchSize = 100): string
     {
-        $activeCount = 0;
+        $start = $month->modify('first day of this month')->setTime(0, 0);
+        $end = $start->modify('+1 month');
+        $total = BigDecimal::zero();
 
-        Product::query()
-            ->select('id')
-            ->where('is_active', true)
-            ->chunkById($batchSize, function (Collection $products) use (&$activeCount): void {
-                $activeCount += $products->count();
-            });
+        Order::successful()
+            ->select('orders.id', 'orders.total')
+            ->where('orders.created_at', '>=', $start)
+            ->where('orders.created_at', '<', $end)
+            ->chunkById($batchSize, function (Collection $orders) use (&$total): void {
+                $batchTotal = BigDecimal::zero();
 
-        return $activeCount;
+                foreach ($orders as $order) {
+                    $batchTotal = $batchTotal->plus((string) $order->total);
+                }
+
+                $total = $total->plus($batchTotal);
+            }, 'orders.id', 'id');
+
+        return (string) $total->toScale(2);
     }
 }

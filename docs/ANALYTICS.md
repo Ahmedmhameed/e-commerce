@@ -85,7 +85,7 @@ Run `php artisan analytics:run q1 --compare` and `php artisan analytics:run q4 -
 
 ## Laravel technique examples
 
-[Laravel techniques](TECHNIQUES.md) documents ten runnable catalog and review examples across three domains.
+[Laravel techniques](TECHNIQUES.md) documents ten runnable order, catalog, and review examples across three domains.
 
 | Domain | Techniques |
 |---|---|

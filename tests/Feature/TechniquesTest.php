@@ -12,9 +12,16 @@ use App\Analytics\Examples\WhereExists;
 use App\Analytics\Examples\WhereRelation;
 use App\Analytics\Examples\WithAggregate;
 use App\Analytics\Examples\WithAvg;
+use App\Models\OrderStatus;
+use App\Models\PaymentMethod;
 use App\Models\Product;
+use App\Models\ShippingMethod;
+use Database\Factories\OrderFactory;
+use Database\Factories\PaymentFactory;
 use Database\Factories\ProductFactory;
 use Database\Factories\ProductReviewFactory;
+use Database\Seeders\ReferenceDataSeeder;
+use DateTimeImmutable;
 use Tests\TestCase;
 
 class TechniquesTest extends TestCase
@@ -95,9 +102,31 @@ class TechniquesTest extends TestCase
         $this->assertNull($ratings[$this->unreviewed->id]->highest_rating);
     }
 
-    public function test_chunk_by_id_counts_active_products_across_batches(): void
+    public function test_chunk_by_id_sums_successful_orders_for_one_month_across_batches(): void
     {
-        $this->assertSame(2, (new ChunkById)->run(1));
+        $this->seed(ReferenceDataSeeder::class);
+        $orders = OrderFactory::new()->state([
+            'order_status_id' => OrderStatus::query()->where('status_name', 'paid')->firstOrFail()->id,
+            'shipping_method_id' => ShippingMethod::query()->where('name', 'standard')->firstOrFail()->id,
+        ]);
+        $paymentMethodId = PaymentMethod::query()->where('name', 'credit_card')->firstOrFail()->id;
+
+        foreach ([
+            ['2025-05-01 00:00:00', '10.10'],
+            ['2025-05-31 23:59:59', '20.20'],
+            ['2025-06-01 00:00:00', '99.99'],
+        ] as [$createdAt, $total]) {
+            $order = $orders->create(['created_at' => $createdAt, 'total' => $total]);
+            PaymentFactory::new()->create([
+                'order_id' => $order->id,
+                'payment_method_id' => $paymentMethodId,
+                'status' => 'completed',
+            ]);
+        }
+
+        $orders->create(['created_at' => '2025-05-15 12:00:00', 'total' => '50.00']);
+
+        $this->assertSame('30.30', (new ChunkById)->run(new DateTimeImmutable('2025-05-15'), 1));
     }
 
     public function test_where_relation_finds_products_with_low_ratings(): void

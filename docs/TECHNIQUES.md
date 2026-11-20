@@ -1,12 +1,12 @@
 # Laravel techniques in the e-commerce assignment
 
-These examples use the catalog and review tables from the 1K PostgreSQL e-commerce sample. Each class exposes a `run()` method. To run an example against the loaded sample, use the application’s sample-database connection and call the class from Artisan Tinker.
+These examples use the orders, catalog, and review tables from the 1K PostgreSQL e-commerce sample. Each class exposes a `run()` method. To run an example against the loaded sample, use the application’s sample-database connection and call the class from Artisan Tinker.
 
 ```php
 (new \App\Analytics\Examples\JoinSub)->run();
 ```
 
-`When` accepts an optional category ID, `OfMany` accepts an existing product ID, and `ChunkById` accepts an optional positive batch size.
+`When` accepts an optional category ID, `OfMany` accepts an existing product ID, and `ChunkById` accepts a date within the target month and an optional positive batch size.
 
 The ten tests in [TechniquesTest.php](../tests/Feature/TechniquesTest.php) use deterministic factory fixtures in `ecommerce_test`. Expected IDs, counts, and ratings are derived from the fixture inputs.
 
@@ -153,27 +153,36 @@ Prefer it over loading every review and reducing the collection in PHP when the 
 
 Processes matching models in batches using the last processed ID to locate the next batch.
 
-Prefer it over get when a task must visit every model and loading the whole result would use too much memory. The count here illustrates batch processing, while a SQL count is simpler when only the total is needed.
+Prefer `chunkById()` over `get()` when PHP needs to process each order and memory for loaded records must stay bounded by the batch size. A single SQL `SUM(orders.total)` is simpler when only the total is needed and also avoids bringing individual records into PHP.
 
 [Laravel 13 documentation](https://laravel.com/docs/13.x/eloquent#chunking-results)
 
-**Dataset question.** How many active products are encountered during a batched catalog scan?
+**Dataset question.** What is the total revenue from successful orders in May 2025, the highest-revenue month in Q5 on the sample?
 
 **Source.** [`app/Analytics/Examples/ChunkById.php`](../app/Analytics/Examples/ChunkById.php)
 
 ```php
-    public function run(int $batchSize = 100): int
+    public function run(DateTimeImmutable $month, int $batchSize = 100): string
     {
-        $activeCount = 0;
+        $start = $month->modify('first day of this month')->setTime(0, 0);
+        $end = $start->modify('+1 month');
+        $total = BigDecimal::zero();
 
-        Product::query()
-            ->select('id')
-            ->where('is_active', true)
-            ->chunkById($batchSize, function (Collection $products) use (&$activeCount): void {
-                $activeCount += $products->count();
-            });
+        Order::successful()
+            ->select('orders.id', 'orders.total')
+            ->where('orders.created_at', '>=', $start)
+            ->where('orders.created_at', '<', $end)
+            ->chunkById($batchSize, function (Collection $orders) use (&$total): void {
+                $batchTotal = BigDecimal::zero();
 
-        return $activeCount;
+                foreach ($orders as $order) {
+                    $batchTotal = $batchTotal->plus((string) $order->total);
+                }
+
+                $total = $total->plus($batchTotal);
+            }, 'orders.id', 'id');
+
+        return (string) $total->toScale(2);
     }
 ```
 
@@ -280,8 +289,32 @@ The results below were checked against independent SQL on the imported 1K Postgr
 | `selectSub` | Product 1's latest rating is 5 |
 | `when` | Category 20 has 12 active products |
 | `withAggregate` | Product 1's highest rating is 5 |
-| `chunkById` | The catalog has 369 active products |
+| `chunkById` | May 2025, the Q5 peak month: 10 successful orders totaling 2,757.15. The batched example, Q5, and direct SQL each return 2,757.15. |
 | `whereRelation` | 15 products have a rating of two or below |
 | `whereDoesntHave` | 365 products have no rating of four or above |
 | `withAvg` | Product 1's average rating is 3.6666666666666667 |
 | `ofMany` | Review 15 wins for product 1 |
+
+To reproduce the peak-month check on the sample, run this independent SQL.
+
+```sql
+SELECT to_char(o.created_at, 'YYYY-MM') AS month,
+       SUM(o.total) AS revenue,
+       COUNT(*) AS successful_orders
+FROM orders AS o
+JOIN order_statuses AS s ON s.id = o.order_status_id
+WHERE s.status_name IN ('paid', 'shipped', 'delivered')
+  AND EXISTS (
+      SELECT 1 FROM payments AS p
+      WHERE p.order_id = o.id AND p.status = 'completed'
+  )
+GROUP BY 1
+ORDER BY revenue DESC, month ASC
+LIMIT 1;
+```
+
+Compare the result with `php artisan analytics:run q5` on the same sample. To reproduce the batched calculation, run the example from Tinker with a batch size of three so processing spans multiple batches.
+
+```php
+(new \App\Analytics\Examples\ChunkById)->run(new \DateTimeImmutable('2025-05-01'), 3);
+```

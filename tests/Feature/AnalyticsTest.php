@@ -61,6 +61,21 @@ class AnalyticsTest extends TestCase
         $this->assertEquals(120, $rows[0]->last_order_total);
     }
 
+    public function test_latest_successful_order_prefers_the_higher_id_at_the_same_timestamp(): void
+    {
+        $buyer = UserFactory::new()->create();
+        $other = UserFactory::new()->create();
+        $this->order($buyer, '2025-01-01', 200);
+        $this->order($buyer, '2025-01-02', 120);
+        $latest = $this->order($buyer, '2025-01-02', 90);
+        $this->order($buyer, '2025-01-02', 500, payment: 'failed');
+        $this->order($buyer, '2025-01-03', 600, status: 'pending');
+        $this->order($other, '2025-01-01', 10);
+
+        $this->assertSame($latest->id, $buyer->latestSuccessfulOrder()->firstOrFail()->id);
+        $this->assertEquals(90, (new HighValueCustomers)->run()->sole()->last_order_total);
+    }
+
     public function test_product_pairs_count_distinct_orders_without_self_or_reversed_pairs(): void
     {
         $user = UserFactory::new()->create();
@@ -172,6 +187,16 @@ class AnalyticsTest extends TestCase
         $this->assertEquals(30, $rows[0]->total_spend);
     }
 
+    public function test_successful_order_at_the_exact_churn_cutoff_excludes_the_customer(): void
+    {
+        $buyer = UserFactory::new()->create();
+        $this->order($buyer, '2024-12-31 12:00:00');
+        $this->order($buyer, '2025-01-01 12:00:00');
+        $this->order($buyer, '2025-04-01 12:00:00', status: 'pending');
+
+        $this->assertCount(0, (new ChurnRisk)->run());
+    }
+
     public function test_monthly_growth_fills_gaps_and_returns_null_when_previous_revenue_is_zero(): void
     {
         $user = UserFactory::new()->create();
@@ -237,6 +262,27 @@ class AnalyticsTest extends TestCase
 
         $this->assertSame(['Ten units'], $rows->pluck('product')->all());
         $this->assertEquals(10, $rows->first()->units_sold);
+    }
+
+    public function test_unreviewed_product_does_not_enter_results_or_lower_the_rating_benchmark(): void
+    {
+        $user = UserFactory::new()->create();
+        $lowerRated = ProductFactory::new()->create(['name' => 'Three stars']);
+        $higherRated = ProductFactory::new()->create(['name' => 'Five stars', 'category_id' => $lowerRated->category_id]);
+        $unreviewed = ProductFactory::new()->create(['name' => 'No reviews', 'category_id' => $lowerRated->category_id]);
+        foreach ([3, 3, 3, 1] as $quantity) {
+            $order = $this->order($user, '2025-01-01');
+            $this->line($order, $lowerRated, $quantity);
+            $this->line($order, $unreviewed, $quantity);
+        }
+        ProductReviewFactory::new()->create(['user_id' => $user->id, 'product_id' => $lowerRated->id, 'rating' => 3]);
+        ProductReviewFactory::new()->create(['user_id' => $user->id, 'product_id' => $higherRated->id, 'rating' => 5]);
+
+        $query = new PopularButPoorlyRated;
+        $rows = $query->run();
+
+        $this->assertSame(['Three stars'], $rows->pluck('product')->all());
+        $this->assertSame($query->runWithQueryBuilder()->toJson(), $rows->toJson());
     }
 
     public function test_return_rate_counts_orders_not_lines_and_ignores_requested_returns(): void

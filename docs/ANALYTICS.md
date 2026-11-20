@@ -12,7 +12,7 @@ The result and benchmark source is the official databasesample.com 1K PostgreSQL
 
 **Question.** Users with at least 3 successful orders whose total spend is above the average spend of customers who have successful orders. Output name, order count, total spend, and total of the last successful order.
 
-**Definition and strategy.** Sum stored order totals per customer. The average includes every customer with at least one successful order. The primary implementation uses Eloquent relationship aggregates and correlated latest-order subqueries. The Query Builder implementation groups orders by customer first and uses PostgreSQL's ordered `ARRAY_AGG` to identify the latest total.
+**Definition and strategy.** Sum stored order totals per customer. The average includes every customer with at least one successful order. The primary implementation uses Eloquent relationship aggregates for count and spend. The `latestSuccessfulOrder` relation uses `ofMany` to choose one successful order by date and ID, and `withMax` exposes that row’s date and total. The Query Builder implementation groups orders by customer first and uses PostgreSQL's ordered `ARRAY_AGG` to identify the latest total.
 
 **Edge cases.** Customers with no successful orders are excluded from the average. Tied order dates are resolved by descending order ID.
 
@@ -36,7 +36,7 @@ The result and benchmark source is the official databasesample.com 1K PostgreSQL
 
 **Question.** Users with at least 2 successful orders and no successful order in the 90 days before the latest order date in the database (not today's date). Output last order date, order count, total spend.
 
-**Definition and strategy.** Use successful order counts and stored order totals. The anchor is the latest date across all orders, including unsuccessful ones. The Eloquent version uses relationship aggregates and a correlated latest-order subquery. The Query Builder version groups successful orders before joining customers. Both apply the PostgreSQL interval comparison to the resulting customer rows.
+**Definition and strategy.** Use successful order counts and stored order totals. The anchor is the latest date across all orders, including unsuccessful ones. The Eloquent version uses the same relationship aggregates as Q1 and applies `whereDoesntHave` to exclude customers with a successful order on or after the SQL cutoff. The Query Builder version groups successful orders before joining customers and checks that the latest successful date is strictly before the cutoff.
 
 **Boundary.** An order at the 90-day cutoff is inside the window. Churn requires the last successful order to be strictly older.
 
@@ -52,7 +52,7 @@ The result and benchmark source is the official databasesample.com 1K PostgreSQL
 
 **Question.** Products with at least 10 units sold (successful orders) whose average rating is below the average rating of all products that have reviews. Output units sold, average rating, review count. Products without reviews are excluded from the comparison average, and must not break the query.
 
-**Definition and strategy.** Sum `order_items.quantity` from successful orders. Count units ordered before returns. Aggregate sales and reviews separately with Query Builder to avoid multiplying either set of rows. The comparison equally weights each reviewed product's mean rating.
+**Definition and strategy.** Sum `order_items.quantity` from successful orders. Count units ordered before returns. The primary Eloquent query computes successful units with `withSum` and review metrics with `withAvg` and `withCount`. A scalar `selectSub` benchmark equally weights each reviewed product's mean rating, and products without reviews are excluded from the results. The Query Builder implementation still aggregates sales and reviews separately before joining them.
 
 **Threshold.** Ten units qualify, even when sold in fewer than ten lines. Unreviewed products cannot qualify and do not contribute to the comparison.
 
@@ -76,8 +76,8 @@ The result and benchmark source is the official databasesample.com 1K PostgreSQL
 
 | Query | Eloquent time | Eloquent SQL queries | Query Builder time | Query Builder SQL queries |
 |---|---:|---:|---:|---:|
-| Q1 | 48.34 ms | 1 | 6.52 ms | 1 |
-| Q4 | 45.06 ms | 1 | 4.77 ms | 1 |
+| Q1 | 120.05 ms | 1 | 7.26 ms | 1 |
+| Q4 | 48.62 ms | 1 | 3.44 ms | 1 |
 
 Each timing and SQL query count comes from a single run of that implementation on the official sample dataset. Timings vary between runs.
 

@@ -5,6 +5,7 @@ namespace App\Models;
 use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 
@@ -52,6 +53,15 @@ class User extends Authenticatable
     public function orders(): HasMany
     {
         return $this->hasMany(Order::class, 'user_id');
+    }
+
+    public function latestSuccessfulOrder(): HasOne
+    {
+        // https://laravel.com/docs/13.x/eloquent-relationships#advanced-has-one-of-many-relationships
+        return $this->hasOne(Order::class)->ofMany(
+            ['created_at' => 'max', 'id' => 'max'],
+            fn ($orders) => $orders->successful(),
+        );
     }
 
     public function productReviews(): HasMany

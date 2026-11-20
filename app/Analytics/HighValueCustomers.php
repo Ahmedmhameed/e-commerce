@@ -10,7 +10,7 @@ final class HighValueCustomers
 {
     public function run(): Collection
     {
-        return $this->aboveAverage(CustomerOrders::eloquent());
+        return $this->aboveAverage(CustomerOrders::eloquent()->toBase());
     }
 
     public function runWithQueryBuilder(): Collection

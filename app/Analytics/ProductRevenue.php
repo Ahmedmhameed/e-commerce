@@ -3,8 +3,9 @@
 namespace App\Analytics;
 
 use App\Models\Order;
-use Illuminate\Database\Query\Builder;
-use Illuminate\Support\Facades\DB;
+use App\Models\OrderItem;
+use App\Models\Product;
+use Illuminate\Database\Eloquent\Builder;
 
 final class ProductRevenue
 {
@@ -12,19 +13,19 @@ final class ProductRevenue
     {
         // Subtract the returned units' proportional share of line revenue, including the integer line discount.
         // PostgreSQL numeric arithmetic preserves fractional cents until after aggregation.
-        return DB::table('order_items as items')
+        return OrderItem::query()
             ->leftJoin('order_returns as returns', function ($join): void {
-                $join->on('returns.order_item_id', '=', 'items.id')->whereIn('returns.status', ['approved', 'refunded']);
+                $join->on('returns.order_item_id', '=', 'order_items.id')->whereIn('returns.status', ['approved', 'refunded']);
             })
-            ->whereIn('items.order_id', Order::successful()->select('id'))
-            ->groupBy('items.product_id')->select('items.product_id')
-            ->selectRaw('SUM((items.unit_price * items.quantity - items.discount_amount) * (items.quantity - COALESCE(returns.quantity, 0)) / items.quantity) AS revenue');
+            ->whereIn('order_items.order_id', Order::successful()->select('id'))
+            ->groupBy('order_items.product_id')->select('order_items.product_id')
+            ->selectRaw('SUM((order_items.unit_price * order_items.quantity - order_items.discount_amount) * (order_items.quantity - COALESCE(returns.quantity, 0)) / order_items.quantity) AS revenue');
     }
 
     public static function ranked(string $windowExpression): Builder
     {
-        return DB::query()->fromSub(self::grouped(), 'sales')
-            ->join('products', 'products.id', '=', 'sales.product_id')
+        return Product::query()
+            ->joinSub(self::grouped(), 'sales', 'sales.product_id', '=', 'products.id')
             ->join('categories', 'categories.id', '=', 'products.category_id')
             ->select('sales.product_id', 'products.name as product', 'categories.id as category_id', 'categories.name as category', 'sales.revenue')
             ->selectRaw($windowExpression);

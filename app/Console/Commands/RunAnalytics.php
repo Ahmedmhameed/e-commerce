@@ -15,7 +15,7 @@ use Illuminate\Support\Facades\DB;
 
 final class RunAnalytics extends Command
 {
-    protected $signature = 'analytics:run {query} {--compare : Benchmark the Query Builder alternative for Q1 or Q4}';
+    protected $signature = 'analytics:run {query}';
 
     protected $description = 'Run an e-commerce analytical query (q1 to q8)';
 
@@ -39,17 +39,9 @@ final class RunAnalytics extends Command
             return self::INVALID;
         }
 
-        $canCompare = $query instanceof HighValueCustomers || $query instanceof ChurnRisk;
-        if ($this->option('compare') && ! $canCompare) {
-            $this->error('Only q1 and q4 have a Query Builder alternative.');
-
-            return self::INVALID;
-        }
-
         // Exclude connection setup from the query timings.
         DB::connection()->getReadPdo();
 
-        $method = $canCompare ? 'Eloquent' : 'Primary';
         [$rows, $count, $elapsed] = $this->measure($query->run(...));
         if ($rows->isEmpty()) {
             $this->info('No matching rows.');
@@ -57,18 +49,7 @@ final class RunAnalytics extends Command
             $this->table(array_keys((array) $rows->first()), $rows->map(fn ($row) => (array) $row)->all());
         }
 
-        $this->line(sprintf('%s: %d SQL queries, %.2f ms', $method, $count, $elapsed));
-
-        if ($this->option('compare')) {
-            [$alternative, $alternativeCount, $alternativeElapsed] = $this->measure($query->runWithQueryBuilder(...));
-            $this->line(sprintf('Query Builder: %d SQL queries, %.2f ms', $alternativeCount, $alternativeElapsed));
-
-            if ($rows->toJson() !== $alternative->toJson()) {
-                $this->error('The two implementations returned different results.');
-
-                return self::FAILURE;
-            }
-        }
+        $this->line(sprintf('Primary: %d SQL queries, %.2f ms', $count, $elapsed));
 
         return self::SUCCESS;
     }

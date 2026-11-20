@@ -53,7 +53,6 @@ class AnalyticsTest extends TestCase
         $query = new HighValueCustomers;
         $rows = $query->run();
 
-        $this->assertEquals($rows->all(), $query->runWithQueryBuilder()->all());
         $this->assertCount(1, $rows);
         $this->assertSame('Alex Buyer', $rows[0]->name);
         $this->assertEquals(3, $rows[0]->order_count);
@@ -179,7 +178,6 @@ class AnalyticsTest extends TestCase
 
         $query = new ChurnRisk;
         $rows = $query->run();
-        $this->assertEquals($rows->all(), $query->runWithQueryBuilder()->all());
         $this->assertCount(1, $rows);
         $this->assertSame('Old Buyer', $rows[0]->name);
         $this->assertStringStartsWith('2024-12-31', $rows[0]->last_order_date);
@@ -282,7 +280,12 @@ class AnalyticsTest extends TestCase
         $rows = $query->run();
 
         $this->assertSame(['Three stars'], $rows->pluck('product')->all());
-        $this->assertSame($query->runWithQueryBuilder()->toJson(), $rows->toJson());
+        $this->assertSame([
+            'product' => 'Three stars',
+            'units_sold' => 10,
+            'review_count' => 1,
+            'average_rating' => '3.00',
+        ], (array) $rows->sole());
     }
 
     public function test_return_rate_counts_orders_not_lines_and_ignores_requested_returns(): void

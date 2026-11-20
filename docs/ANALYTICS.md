@@ -12,7 +12,7 @@ The result and benchmark source is the official databasesample.com 1K PostgreSQL
 
 **Question.** Users with at least 3 successful orders whose total spend is above the average spend of customers who have successful orders. Output name, order count, total spend, and total of the last successful order.
 
-**Definition and strategy.** Sum stored order totals per customer. The average includes every customer with at least one successful order. The primary implementation uses Eloquent relationship aggregates for count and spend. The `latestSuccessfulOrder` relation uses `ofMany` to choose one successful order by date and ID, and `withMax` exposes that row’s date and total. The Query Builder implementation groups orders by customer first and uses PostgreSQL's ordered `ARRAY_AGG` to identify the latest total.
+**Definition and strategy.** Sum stored order totals per customer. The average includes every customer with at least one successful order. The primary implementation uses Eloquent relationship aggregates for count and spend. The `latestSuccessfulOrder` relation uses `ofMany` to choose one successful order by date and ID, and `withMax` exposes that row’s date and total. The buyer average is computed before applying the three-order threshold.
 
 **Edge cases.** Customers with no successful orders are excluded from the average. Tied order dates are resolved by descending order ID.
 
@@ -20,7 +20,7 @@ The result and benchmark source is the official databasesample.com 1K PostgreSQL
 
 **Question.** Top 5 unordered product pairs by count of distinct orders in which both appear. Output both product names and the count. Exclude self pairs and reversed duplicates.
 
-**Definition and strategy.** Deduplicate successful order–product combinations, then self-join within each order using ascending product IDs to represent each unordered pair once. Query Builder subqueries and a distinct-order count keep aggregation in PostgreSQL. Returns do not change whether products appeared together.
+**Definition and strategy.** Start with the first product and join two order lines from the same successful order. Increasing product IDs exclude self and reversed pairs. Counting distinct order IDs prevents repeated lines from inflating the count. Returns do not change whether products appeared together.
 
 **Tie rule.** Sort by order count descending, first product name ascending, then second product name ascending. Product IDs resolve any remaining ties between identical names. Apply the five-row limit after sorting.
 
@@ -28,7 +28,7 @@ The result and benchmark source is the official databasesample.com 1K PostgreSQL
 
 **Question.** Products with successful sales whose revenue is below the average revenue of sold products in the same category. Output product, category, revenue, and category average.
 
-**Definition and strategy.** Group net line revenue by product, then use a PostgreSQL window average partitioned by category. Query Builder keeps one row per sold product while retaining the category average for comparison.
+**Definition and strategy.** Group net line revenue by product, then use a PostgreSQL window average partitioned by category. The query starts from order items, joins their totals to products, and filters by the unrounded category average.
 
 **Zero revenue.** Fully returned products contributed successful sales and remain in the average at zero net revenue. They can appear below the average. Unsold products do not contribute.
 
@@ -36,7 +36,7 @@ The result and benchmark source is the official databasesample.com 1K PostgreSQL
 
 **Question.** Users with at least 2 successful orders and no successful order in the 90 days before the latest order date in the database (not today's date). Output last order date, order count, total spend.
 
-**Definition and strategy.** Use successful order counts and stored order totals. The anchor is the latest date across all orders, including unsuccessful ones. The Eloquent version uses the same relationship aggregates as Q1 and applies `whereDoesntHave` to exclude customers with a successful order on or after the SQL cutoff. The Query Builder version groups successful orders before joining customers and checks that the latest successful date is strictly before the cutoff.
+**Definition and strategy.** Use successful order counts and stored order totals. The anchor is the latest date across all orders, including unsuccessful ones. The Eloquent version uses the same relationship aggregates as Q1 and applies `whereDoesntHave` to exclude customers with a successful order on or after the SQL cutoff.
 
 **Boundary.** An order at the 90-day cutoff is inside the window. Churn requires the last successful order to be strictly older.
 
@@ -44,7 +44,7 @@ The result and benchmark source is the official databasesample.com 1K PostgreSQL
 
 **Question.** Successful revenue per month, compared with the previous month, showing growth percentage. Include months with no sales as zero. Handle division by zero (show null, not an error).
 
-**Definition and strategy.** Sum stored totals from successful orders. Raw PostgreSQL SQL combines a calendar generated by `GENERATE_SERIES` with monthly totals and uses `LAG` to select the previous calendar month. The calendar spans the first through the last month recorded in the orders table, including months with only unsuccessful orders. Only successful orders contribute to monthly revenue.
+**Definition and strategy.** Sum stored totals from successful orders. The Eloquent query joins a calendar generated by `GENERATE_SERIES` with monthly totals and uses `LAG` to select the previous calendar month. The calendar spans the first through the last month recorded in the orders table, including months with only unsuccessful orders. Only successful orders contribute to monthly revenue.
 
 **Edge cases.** Missing months have zero revenue. The first month and months following zero revenue have null growth.
 
@@ -52,7 +52,7 @@ The result and benchmark source is the official databasesample.com 1K PostgreSQL
 
 **Question.** Products with at least 10 units sold (successful orders) whose average rating is below the average rating of all products that have reviews. Output units sold, average rating, review count. Products without reviews are excluded from the comparison average, and must not break the query.
 
-**Definition and strategy.** Sum `order_items.quantity` from successful orders. Count units ordered before returns. The primary Eloquent query computes successful units with `withSum` and review metrics with `withAvg` and `withCount`. A scalar `selectSub` benchmark equally weights each reviewed product's mean rating, and products without reviews are excluded from the results. The Query Builder implementation still aggregates sales and reviews separately before joining them.
+**Definition and strategy.** Sum `order_items.quantity` from successful orders. Count units ordered before returns. The primary Eloquent query computes successful units with `withSum` and review metrics with `withAvg` and `withCount`. A window averages those per-product ratings before the sales filter. Products without reviews have a null average and contribute no weight.
 
 **Threshold.** Ten units qualify, even when sold in fewer than ten lines. Unreviewed products cannot qualify and do not contribute to the comparison.
 
@@ -60,7 +60,7 @@ The result and benchmark source is the official databasesample.com 1K PostgreSQL
 
 **Question.** Users with successful orders who returned items in more than one order. Output total orders, orders with returns, and return rate.
 
-**Definition and strategy.** Eloquent relationship existence checks identify orders with at least one approved or refunded return. PostgreSQL's aggregate `FILTER` counts those orders once each, and the query includes only users with qualifying returns in more than one distinct successful order. Return rate is the percentage of successful orders containing a qualifying return.
+**Definition and strategy.** Two Eloquent relationship counts give each user’s successful orders and the subset with an approved or refunded return. The outer query keeps users whose second count exceeds one. Return rate is the percentage of successful orders containing a qualifying return.
 
 **Edge case.** Multiple returned lines in a single order contribute one qualifying order.
 
@@ -68,20 +68,9 @@ The result and benchmark source is the official databasesample.com 1K PostgreSQL
 
 **Question.** The highest-revenue product in each category, showing ties (all tied products). Output category name, product, revenue.
 
-**Definition and strategy.** Reuse the net line revenue aggregation from Q3. Query Builder applies PostgreSQL's `DENSE_RANK` by category to find each maximum while preserving the product rows.
+**Definition and strategy.** Reuse the net line revenue aggregation from Q3. The Eloquent product query applies PostgreSQL's `DENSE_RANK` by category to find each maximum while preserving the product rows.
 
 **Tie rule.** Include all products tied at the highest unrounded net revenue. Categories with no successful sales are omitted.
-
-## Q1 and Q4 implementation comparison
-
-| Query | Eloquent time | Eloquent SQL queries | Query Builder time | Query Builder SQL queries |
-|---|---:|---:|---:|---:|
-| Q1 | 120.05 ms | 1 | 7.26 ms | 1 |
-| Q4 | 48.62 ms | 1 | 3.44 ms | 1 |
-
-Each timing and SQL query count comes from a single run of that implementation on the official sample dataset. Timings vary between runs.
-
-Run `php artisan analytics:run q1 --compare` and `php artisan analytics:run q4 --compare` against the sample-loaded database to repeat the comparison. Eloquent makes the model relationships explicit, while Query Builder makes the grouped order input explicit.
 
 ## Laravel technique examples
 
@@ -93,4 +82,4 @@ Run `php artisan analytics:run q1 --compare` and `php artisan analytics:run q4 -
 | Eloquent ORM | `withAggregate`, `chunkById`, `whereRelation` |
 | Eloquent Relationships | `whereDoesntHave`, `withAvg`, `ofMany` |
 
-Each example answers a separate question about the sample schema and has a fixture-based feature test. The Q1–Q8 results and timings above refer to the original analytics queries.
+Each example answers a separate question about the sample schema and has a fixture-based feature test.

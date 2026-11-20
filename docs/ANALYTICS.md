@@ -82,3 +82,15 @@ The result and benchmark source is the official databasesample.com 1K PostgreSQL
 Each timing and SQL query count comes from a single run of that implementation on the official sample dataset. Timings vary between runs.
 
 Run `php artisan analytics:run q1 --compare` and `php artisan analytics:run q4 --compare` against the sample-loaded database to repeat the comparison. Eloquent makes the model relationships explicit, while Query Builder makes the grouped order input explicit.
+
+## Laravel technique examples
+
+[Laravel techniques](TECHNIQUES.md) documents ten runnable catalog and review examples across three domains.
+
+| Domain | Techniques |
+|---|---|
+| DB Query Builder | `joinSub`, `whereExists`, `selectSub`, `when` |
+| Eloquent ORM | `withAggregate`, `chunkById`, `whereRelation` |
+| Eloquent Relationships | `whereDoesntHave`, `withAvg`, `ofMany` |
+
+Each example answers a separate question about the sample schema and has a fixture-based feature test. The Q1–Q8 results and timings above refer to the original analytics queries.

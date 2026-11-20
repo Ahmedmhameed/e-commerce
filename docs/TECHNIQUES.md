@@ -1,203 +1,287 @@
 # Laravel techniques in the e-commerce assignment
 
-These examples come from the analytics queries, models, factories, and seeders in the project. Query numbers refer to the [e-commerce analytics report](ANALYTICS.md).
-
-## 1. Eloquent relationships
-
-An Eloquent relationship defines how a model is associated with records in another model.
-
-[Official Laravel 13 documentation](https://laravel.com/docs/13.x/eloquent-relationships#one-to-many)
-
-Project example in `app/Models/Order.php`.
+These examples use the catalog and review tables from the 1K PostgreSQL e-commerce sample. Each class exposes a `run()` method. To run an example against the loaded sample, use the application’s sample-database connection and call the class from Artisan Tinker.
 
 ```php
-    public function orderItems(): HasMany
+(new \App\Analytics\Examples\JoinSub)->run();
+```
+
+`When` accepts an optional category ID, `OfMany` accepts an existing product ID, and `ChunkById` accepts an optional positive batch size.
+
+The ten tests in [TechniquesTest.php](../tests/Feature/TechniquesTest.php) use deterministic factory fixtures in `ecommerce_test`. Expected IDs, counts, and ratings are derived from the fixture inputs.
+
+## DB Query Builder
+
+### `joinSub`
+
+Joins a query to the rows produced by a subquery.
+
+Prefer it when the joined input needs to be grouped before the join. This makes the one-row-per-product requirement explicit and keeps individual review rows out of the outer result.
+
+[Laravel 13 documentation](https://laravel.com/docs/13.x/queries#subquery-joins)
+
+**Dataset question.** Which products have reviews, and how many reviews does each have?
+
+**Source.** [`app/Analytics/Examples/JoinSub.php`](../app/Analytics/Examples/JoinSub.php)
+
+```php
+    public function run(): Collection
     {
-        return $this->hasMany(OrderItem::class, 'order_id');
-    }
+        $reviewCounts = DB::table('product_reviews')
+            ->select('product_id')
+            ->selectRaw('COUNT(*) AS review_count')
+            ->groupBy('product_id');
 
-    public function payment(): HasOne
-    {
-        return $this->hasOne(Payment::class, 'order_id');
-    }
-```
-
-An order can have several line items and links to one payment through the same foreign-key name, `order_id`, on the respective related tables. Named relationships centralize those associations for callers that would otherwise write foreign-key filters directly.
-
-## 2. Local query scopes
-
-A local scope packages reusable constraints that callers can chain onto an Eloquent query.
-
-[Official Laravel 13 documentation](https://laravel.com/docs/13.x/eloquent#local-scopes)
-
-Project example in `app/Models/Order.php`.
-
-```php
-    public function scopeSuccessful(Builder $query): Builder
-    {
-        return $query
-            ->whereHas('status', fn (Builder $status) => $status->whereIn('status_name', ['paid', 'shipped', 'delivered']))
-            ->whereHas('payment', fn (Builder $payment) => $payment->where('status', 'completed'));
-    }
-```
-
-The `successful()` scope gives all eight analytics queries the same definition of a successful order. It replaces repeating the status and payment conditions in each query.
-
-## 3. Relationship existence filters
-
-Eloquent’s `whereHas()` filters parent records by whether a related record meets the given conditions.
-
-[Official Laravel 13 documentation](https://laravel.com/docs/13.x/eloquent-relationships#querying-relationship-existence)
-
-Project example in `app/Analytics/ReturnBehavior.php`.
-
-```php
-        $orders = Order::successful()->select('id', 'user_id')
-            ->withExists(['orderItems as has_return' => fn ($items) => $items->whereHas(
-                'orderReturn', fn ($returns) => $returns->whereIn('status', ['approved', 'refunded'])
-            )]);
-```
-
-Q7 uses `whereHas()` to find order items with an approved or refunded return. The enclosing `withExists()` records a yes-or-no result for the order, so multiple qualifying items still count as one returned order.
-
-## 4. Relationship aggregates
-
-Relationship aggregate methods such as `withCount()` and `withSum()` add scalar summaries of related rows to the main query.
-
-[Official Laravel 13 documentation](https://laravel.com/docs/13.x/eloquent-relationships#aggregating-related-models)
-
-Project example in `app/Analytics/CustomerOrders.php`.
-
-```php
-            ->withCount(['orders as order_count' => fn ($orders) => $orders->successful()])
-            ->withSum(['orders as total_spend' => fn ($orders) => $orders->successful()], 'total')
-```
-
-Q1 and Q4 need the count and total value of each customer’s successful orders. These methods compute both values in SQL and avoid loading individual orders into PHP. The Query Builder alternative groups successful orders by customer first. See the [sample run results below](#q1-and-q4-sample-run) for both implementations.
-
-## 5. Correlated select subqueries
-
-A correlated select subquery uses a value from the outer query to return a value for each outer row.
-
-[Official Laravel 13 documentation](https://laravel.com/docs/13.x/eloquent#advanced-subqueries)
-
-Project example in `app/Analytics/CustomerOrders.php`.
-
-```php
-            ->addSelect([
-                'last_order_date' => Order::successful()->select('created_at')->whereColumn('user_id', 'users.id')->latest('created_at')->latest('id')->limit(1),
-                'last_order_total' => Order::successful()->select('total')->whereColumn('user_id', 'users.id')->latest('created_at')->latest('id')->limit(1),
-            ])->toBase();
-```
-
-Q1 uses the latest order total and Q4 uses the latest order date. Both subqueries match the outer customer ID and sort by date and then ID so that tied dates resolve consistently. The grouped Query Builder alternative uses `MAX` for the date and an ordered `ARRAY_AGG` for the total. See the [sample run results below](#q1-and-q4-sample-run) for both implementations.
-
-## 6. Grouped SQL aggregates
-
-Query Builder’s `groupBy()` groups rows by a key so that SQL can calculate aggregate values for each group.
-
-[Official Laravel 13 documentation](https://laravel.com/docs/13.x/queries#grouping)
-
-Project example in `app/Analytics/CustomerOrders.php`.
-
-```php
-        $spend = DB::query()->fromSub($orders, 'successful_orders')
-            ->select('user_id')
-            ->selectRaw('COUNT(*) AS order_count, SUM(total) AS total_spend, MAX(created_at) AS last_order_date, (ARRAY_AGG(total ORDER BY created_at DESC, id DESC))[1] AS last_order_total')
-            ->groupBy('user_id');
-```
-
-The grouped Q1 and Q4 implementation produces one summary row per customer with successful orders before joining to users. The alternative adds relationship aggregates and correlated subqueries to the customer query. See the [sample run results below](#q1-and-q4-sample-run) for both implementations.
-
-## 7. Joining subqueries
-
-Query Builder’s `joinSub()` joins a query to the result of another query under a table alias.
-
-[Official Laravel 13 documentation](https://laravel.com/docs/13.x/queries#subquery-joins)
-
-Project example in `app/Analytics/PopularButPoorlyRated.php`.
-
-```php
-        return DB::table('products')->joinSub($sales, 'sales', 'sales.product_id', '=', 'products.id')
-            ->joinSub($ratings, 'ratings', 'ratings.product_id', '=', 'products.id')
-```
-
-Q6 joins per-product sales and review summaries after each has been aggregated. Joining the underlying sales lines and reviews directly could multiply rows and inflate sales or review counts.
-
-## 8. Raw SQL expressions
-
-Query Builder’s raw expression methods embed SQL fragments where a query needs database-specific syntax or functions.
-
-[Official Laravel 13 documentation](https://laravel.com/docs/13.x/queries#raw-methods)
-
-Project example in `app/Analytics/ChurnRisk.php`.
-
-```php
-            ->where('order_count', '>=', 2)
-            ->whereRaw("last_order_date < (SELECT MAX(created_at) - INTERVAL '90 days' FROM orders)")
-            ->orderBy('last_order_date')->orderBy('id')->get();
-```
-
-Q4 uses PostgreSQL interval arithmetic to compare the customer’s last successful order with a cutoff based on the latest order in the entire table. The expression uses a fixed 90-day literal and replaces a separate lookup and cutoff calculation in PHP.
-
-## 9. Model factories
-
-An Eloquent factory defines default attributes and related records for generating model instances.
-
-[Official Laravel 13 documentation](https://laravel.com/docs/13.x/eloquent-factories#defining-model-factories)
-
-Project example in `database/factories/OrderFactory.php`.
-
-```php
-    public function definition(): array
-    {
-        return [
-            'billing_address_id' => AddressFactory::new(),
-            'coupon_id' => null,
-            'created_at' => now(),
-            'discount_amount' => 0,
-            'order_status_id' => OrderStatusFactory::new(),
-            'shipping_address_id' => AddressFactory::new(),
-            'shipping_cost' => 5,
-            'shipping_method_id' => ShippingMethodFactory::new(),
-            'subtotal' => 100,
-            'tax_amount' => 5,
-            'total' => 110,
-            'user_id' => UserFactory::new(),
-        ];
+        return DB::table('products')
+            ->joinSub($reviewCounts, 'reviews', 'reviews.product_id', '=', 'products.id')
+            ->select('products.id', 'products.name', 'reviews.review_count')
+            ->orderBy('products.id')
+            ->get();
     }
 ```
 
-The order factory supplies consistent monetary defaults and factories for required related records. Tests can override the fields they care about without defining an entire order and all its dependencies in every fixture.
+### `whereExists`
 
-## 10. Seeder orchestration
+Keeps an outer row when a correlated subquery finds at least one matching row.
 
-A Laravel seeder populates database data and can use `call()` to run other seeders in a defined order.
+Prefer it over an inner join when only the presence of a match matters. A product with multiple five-star reviews can then appear once without a separate deduplication step.
 
-[Official Laravel 13 documentation](https://laravel.com/docs/13.x/seeding#calling-additional-seeders)
+[Laravel 13 documentation](https://laravel.com/docs/13.x/queries#where-exists-clauses)
 
-Project example in `database/seeders/DatabaseSeeder.php`.
+**Dataset question.** Which products have received at least one five-star review?
+
+**Source.** [`app/Analytics/Examples/WhereExists.php`](../app/Analytics/Examples/WhereExists.php)
 
 ```php
-    public function run(): void
+    public function run(): Collection
     {
-        $this->call(ReferenceDataSeeder::class);
+        $highRatings = DB::table('product_reviews')
+            ->select('product_reviews.id')
+            ->whereColumn('product_reviews.product_id', 'products.id')
+            ->where('rating', 5);
 
-        if (app()->environment(['local', 'development'])) {
-            $this->call(DevelopmentDataSeeder::class);
-        }
+        return DB::table('products')
+            ->whereExists($highRatings)
+            ->orderBy('id')
+            ->pluck('name', 'id');
     }
 ```
 
-The default seeder loads reference data first and runs the development seeder only in the local or development environment. Delegation keeps the two sets of seed operations in their own classes.
+### `selectSub`
 
-## Q1 and Q4 sample run
+Adds a scalar subquery result as a named column in the SELECT list.
 
-| Query | Eloquent time | Eloquent SQL queries | Query Builder time | Query Builder SQL queries |
-|---|---:|---:|---:|---:|
-| Q1 | 48.34 ms | 1 | 6.52 ms | 1 |
-| Q4 | 45.06 ms | 1 | 4.77 ms | 1 |
+Prefer it over a separate lookup per product when the report needs one related value per row. Limit the subquery to one row and specify a tie-breaker when selecting a particular review.
 
-Each timing and SQL query count comes from a single run of that implementation on the official sample dataset. Timings vary between runs.
+[Laravel 13 documentation](https://laravel.com/docs/13.x/eloquent#advanced-subqueries)
 
-See the [analytics comparison](ANALYTICS.md#q1-and-q4-implementation-comparison) for the commands used to compare the implementations.
+[Laravel 13 API reference for `selectSub`](https://api.laravel.com/docs/13.x/Illuminate/Database/Query/Builder.html#method_selectSub)
+
+**Dataset question.** What rating did each product receive in its latest review, if any?
+
+**Source.** [`app/Analytics/Examples/SelectSub.php`](../app/Analytics/Examples/SelectSub.php)
+
+```php
+    public function run(): Collection
+    {
+        $latestRating = DB::table('product_reviews')
+            ->select('rating')
+            ->whereColumn('product_id', 'products.id')
+            ->orderByDesc('created_at')
+            ->orderByDesc('id')
+            ->limit(1);
+
+        return DB::table('products')
+            ->select('products.id', 'products.name')
+            ->selectSub($latestRating, 'latest_rating')
+            ->orderBy('products.id')
+            ->get();
+    }
+```
+
+### `when`
+
+Applies a query callback when its condition is true.
+
+Prefer it over building two separate queries when a single optional filter distinguishes them. The active-product filter and result ordering can then stay in one shared chain.
+
+[Laravel 13 documentation](https://laravel.com/docs/13.x/queries#conditional-clauses)
+
+**Dataset question.** Which active products are available, optionally within a given category?
+
+**Source.** [`app/Analytics/Examples/When.php`](../app/Analytics/Examples/When.php)
+
+```php
+    public function run(?int $categoryId = null): Collection
+    {
+        return DB::table('products')
+            ->where('is_active', true)
+            ->when($categoryId !== null, fn (Builder $query) => $query->where('category_id', $categoryId))
+            ->orderBy('id')
+            ->pluck('name', 'id');
+    }
+```
+
+## Eloquent ORM
+
+### `withAggregate`
+
+Adds a scalar aggregate of a model relationship to the selected model attributes.
+
+Prefer it over loading every review and reducing the collection in PHP when the result needs only an aggregate. For a fixed maximum in production, the dedicated withMax method expresses the same intent more directly.
+
+[Laravel 13 documentation](https://laravel.com/docs/13.x/eloquent-relationships#other-aggregate-functions)
+
+[Laravel 13 API reference for `withAggregate`](https://api.laravel.com/docs/13.x/Illuminate/Database/Eloquent/Concerns/QueriesRelationships.html#method_withAggregate)
+
+**Dataset question.** What is the highest rating each product has received?
+
+**Source.** [`app/Analytics/Examples/WithAggregate.php`](../app/Analytics/Examples/WithAggregate.php)
+
+```php
+    public function run(): Collection
+    {
+        return Product::query()
+            ->select('id', 'name')
+            ->withAggregate('productReviews as highest_rating', 'rating', 'max')
+            ->orderBy('id')
+            ->get();
+    }
+```
+
+### `chunkById`
+
+Processes matching models in batches using the last processed ID to locate the next batch.
+
+Prefer it over get when a task must visit every model and loading the whole result would use too much memory. The count here illustrates batch processing, while a SQL count is simpler when only the total is needed.
+
+[Laravel 13 documentation](https://laravel.com/docs/13.x/eloquent#chunking-results)
+
+**Dataset question.** How many active products are encountered during a batched catalog scan?
+
+**Source.** [`app/Analytics/Examples/ChunkById.php`](../app/Analytics/Examples/ChunkById.php)
+
+```php
+    public function run(int $batchSize = 100): int
+    {
+        $activeCount = 0;
+
+        Product::query()
+            ->select('id')
+            ->where('is_active', true)
+            ->chunkById($batchSize, function (Collection $products) use (&$activeCount): void {
+                $activeCount += $products->count();
+            });
+
+        return $activeCount;
+    }
+```
+
+### `whereRelation`
+
+Filters models using a single condition on a named relationship.
+
+Prefer it over a whereHas callback when one related-column comparison fully describes the filter. The shorter form keeps the rating condition visible in the product query.
+
+[Laravel 13 documentation](https://laravel.com/docs/13.x/eloquent-relationships#inline-relationship-existence-queries)
+
+**Dataset question.** Which products have at least one review rated two stars or below?
+
+**Source.** [`app/Analytics/Examples/WhereRelation.php`](../app/Analytics/Examples/WhereRelation.php)
+
+```php
+    public function run(): Collection
+    {
+        return Product::query()
+            ->whereRelation('productReviews', 'rating', '<=', 2)
+            ->orderBy('id')
+            ->get(['id', 'name']);
+    }
+```
+
+## Eloquent Relationships
+
+### `whereDoesntHave`
+
+Keeps models whose relationship has no rows that meet the given conditions.
+
+Prefer it over filtering loaded reviews in PHP when the database can apply the absence test. A constrained absence check includes both products with only lower ratings and products with no reviews.
+
+[Laravel 13 documentation](https://laravel.com/docs/13.x/eloquent-relationships#querying-relationship-absence)
+
+**Dataset question.** Which products have never received a rating of four stars or above?
+
+**Source.** [`app/Analytics/Examples/WhereDoesntHave.php`](../app/Analytics/Examples/WhereDoesntHave.php)
+
+```php
+    public function run(): Collection
+    {
+        return Product::query()
+            ->whereDoesntHave('productReviews', fn (Builder $reviews) => $reviews->where('rating', '>=', 4))
+            ->orderBy('id')
+            ->get(['id', 'name']);
+    }
+```
+
+### `withAvg`
+
+Adds the average of a related column to each selected parent model.
+
+Prefer it over fetching every rating when the report needs only the mean. The aggregate returns null for an unreviewed product, which keeps missing ratings distinguishable from numeric values.
+
+[Laravel 13 documentation](https://laravel.com/docs/13.x/eloquent-relationships#other-aggregate-functions)
+
+**Dataset question.** What is each product’s average review rating?
+
+**Source.** [`app/Analytics/Examples/WithAvg.php`](../app/Analytics/Examples/WithAvg.php)
+
+```php
+    public function run(): Collection
+    {
+        return Product::query()
+            ->select('id', 'name')
+            ->withAvg('productReviews as average_rating', 'rating')
+            ->orderBy('id')
+            ->get();
+    }
+```
+
+### `ofMany`
+
+Selects a single related model from a one-to-many relationship using aggregate selection criteria.
+
+Prefer it over sorting a loaded collection when the caller needs a single related model selected by the database. Use multiple criteria when the primary criterion can tie and the chosen review must be deterministic.
+
+[Laravel 13 documentation](https://laravel.com/docs/13.x/eloquent-relationships#has-one-of-many)
+
+**Dataset question.** Which review has the highest rating for a selected product, with the greatest review ID breaking ties?
+
+**Source.** [`app/Analytics/Examples/OfMany.php`](../app/Analytics/Examples/OfMany.php)
+
+```php
+    public function run(int $productId): ?ProductReview
+    {
+        return Product::query()
+            ->findOrFail($productId)
+            ->productReviews()
+            ->one()
+            ->ofMany(['rating' => 'max', 'id' => 'max'])
+            ->first();
+    }
+```
+## Sample database verification
+
+The results below were checked against independent SQL on the imported 1K PostgreSQL sample. Product-specific checks used product ID 1 and the category filter used category ID 20.
+
+| Technique | Independently verified result |
+|---|---|
+| `joinSub` | Product 1 has 3 reviews |
+| `whereExists` | 26 products have a five-star review |
+| `selectSub` | Product 1's latest rating is 5 |
+| `when` | Category 20 has 12 active products |
+| `withAggregate` | Product 1's highest rating is 5 |
+| `chunkById` | The catalog has 369 active products |
+| `whereRelation` | 15 products have a rating of two or below |
+| `whereDoesntHave` | 365 products have no rating of four or above |
+| `withAvg` | Product 1's average rating is 3.6666666666666667 |
+| `ofMany` | Review 15 wins for product 1 |
